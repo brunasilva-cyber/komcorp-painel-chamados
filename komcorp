@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Painel de Chamados</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; }
+        input, select, textarea, button { font-family: inherit; font-size: 13px; }
+        input, select, textarea { padding: 8px; border: 1px solid #ddd; border-radius: 6px; width: 100%; }
+        button { padding: 8px 16px; border-radius: 6px; cursor: pointer; border: none; }
+        .primary { background: #3b82f6; color: white; }
+        .primary:hover { background: #2563eb; }
+        .secondary { background: #fff; border: 1px solid #ddd; }
+        .secondary:hover { background: #f9f9f9; }
+        .danger { background: #e34948; color: white; }
+        .danger:hover { background: #d93847; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+        const DEPARTAMENTOS = ['Financeiro', 'RH', 'CS', 'MKT', 'Fiscal', 'Contábil', 'DP', 'Societário', 'TI', 'Manutenção'];
+        const COLUNAS = ['Novo', 'Em análise', 'Em Progresso', 'Aguardando Cliente', 'Resolvido'];
+        const PRIORIDADES = ['Baixa', 'Média', 'Alta', 'Crítica'];
+        const SLAS = { 'Novo': 24, 'Em análise': 24, 'Em Progresso': 48, 'Aguardando Cliente': 48 };
+        const COR = { 'Crítica': '#e34948', 'Alta': '#fab219', 'Média': '#1baf7a', 'Baixa': '#2a78d6' };
+
+        function PainelChamados() {
+            const [usuarios, setUsuarios] = React.useState([]);
+            const [chamados, setChamados] = React.useState([]);
+            const [usuarioLogado, setUsuarioLogado] = React.useState(null);
+            const [telaAtual, setTelaAtual] = React.useState('login');
+            const [emailLogin, setEmailLogin] = React.useState('');
+            const [novoModalAberto, setNovoModalAberto] = React.useState(false);
+            const [novoUsuarioModalAberto, setNovoUsuarioModalAberto] = React.useState(false);
+            const [chamadoSelecionado, setChamadoSelecionado] = React.useState(null);
+            const [draggedCard, setDraggedCard] = React.useState(null);
+            const [filtroStatus, setFiltroStatus] = React.useState('Todos');
+            const [filtroPrioridade, setFiltroPrioridade] = React.useState('Todos');
+            const [statusImport, setStatusImport] = React.useState('');
+            const [importPendente, setImportPendente] = React.useState(null);
+            const [formNovo, setFormNovo] = React.useState({
+                titulo: '', descricao: '', prioridade: 'Média',
+                dataLimite: new Date().toISOString().split('T')[0], responsavel: ''
+            });
+            const [formNovoUsuario, setFormNovoUsuario] = React.useState({
+                nome: '', email: '', dpto: DEPARTAMENTOS[0], permissao: 'usuario'
+            });
+
+            React.useEffect(() => {
+                const users = localStorage.getItem('usuarios');
+                const chamds = localStorage.getItem('chamados');
+                if (users) setUsuarios(JSON.parse(users));
+                else {
+                    const mockUsers = [
+                        { id: 'usr-001', nome: 'Bruna', dpto: 'Financeiro', email: 'bruna@komcorp.com.br', permissao: 'admin' },
+                        { id: 'usr-002', nome: 'João', dpto: 'Fiscal', email: 'joao@komcorp.com.br', permissao: 'usuario' },
+                        { id: 'usr-003', nome: 'Maria', dpto: 'DP', email: 'maria@komcorp.com.br', permissao: 'usuario' }
+                    ];
+                    setUsuarios(mockUsers);
+                }
+                if (chamds) setChamados(JSON.parse(chamds));
+                else setChamados([]);
+            }, []);
+
+            React.useEffect(() => {
+                if (usuarios.length > 0) localStorage.setItem('usuarios', JSON.stringify(usuarios));
+            }, [usuarios]);
+
+            React.useEffect(() => {
+                if (chamados.length > 0) localStorage.setItem('chamados', JSON.stringify(chamados));
+            }, [chamados]);
+
+            const importarExcel = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    try {
+                        const data = new Uint8Array(event.target.result);
+                        const workbook = XLSX.read(data, {type: 'array'});
+                        const worksheet = workbook.Sheets['Usuários'] || workbook.Sheets[workbook.SheetNames[0]];
+                        const json = XLSX.utils.sheet_to_json(worksheet);
+                        
+                        if (!json || json.length === 0) {
+                            setStatusImport('❌ Nenhum usuário encontrado no arquivo');
+                            return;
+                        }
+
+                        const usuariosImportados = json.map((row, idx) => ({
+                            id: `usr-${String(Math.max(...usuarios.map(u => parseInt(u.id.split('-')[1]) || 0), ...json.map((_, i) => i)) + 1).padStart(3, '0')}`,
+                            nome: row.Nome || row.name || row.Colaborador || '',
+                            email: row.Email || row.email || '',
+                            dpto: row.Departamento || row.department || row.Dpto || DEPARTAMENTOS[0],
+                            permissao: row.Permissão || row.permission || 'usuario'
+                        })).filter(u => u.nome && u.email);
+
+                        if (usuariosImportados.length === 0) {
+                            setStatusImport('❌ Nenhum usuário válido encontrado (verifique as colunas: Nome, Email, Departamento)');
+                            return;
+                        }
+
+                        setImportPendente(usuariosImportados);
+                    } catch (err) {
+                        setStatusImport('❌ Erro ao ler arquivo: ' + err.message);
+                    }
+                };
+                reader.readAsArrayBuffer(file);
+            };
+
+            const confirmarImport = (substituir) => {
+                if (!importPendente) return;
+                
+                if (substituir) {
+                    setUsuarios(importPendente);
+                    setStatusImport(`✅ ${importPendente.length} usuários importados e substituíram os antigos!`);
+                } else {
+                    setUsuarios([...usuarios, ...importPendente]);
+                    setStatusImport(`✅ ${importPendente.length} usuários adicionados!`);
+                }
+                
+                setImportPendente(null);
+                setTimeout(() => setStatusImport(''), 4000);
+            };
+
+            const deletarUsuario = (id) => {
+                if (confirm('Tem certeza que quer deletar este usuário?')) {
+                    setUsuarios(usuarios.filter(u => u.id !== id));
+                }
+            };
+
+            if (telaAtual === 'login') {
+                return (
+                    <div style={{maxWidth: '400px', margin: '2rem auto', padding: '2rem', background: '#fff', border: '1px solid #ddd', borderRadius: '12px'}}>
+                        <h2 style={{marginBottom: '1.5rem', fontSize: '20px'}}>Painel de Chamados</h2>
+                        <input type="email" value={emailLogin} onChange={(e) => setEmailLogin(e.target.value)} placeholder="seu@email.com" style={{marginBottom: '1rem'}} />
+                        <button className="primary" onClick={() => {
+                            const user = usuarios.find(u => u.email.toLowerCase() === emailLogin.toLowerCase());
+                            if (user) { setUsuarioLogado(user); setTelaAtual(user.permissao === 'admin' ? 'admin' : 'chamados'); }
+                            else alert('Usuário não encontrado');
+                        }} style={{width: '100%', marginBottom: '1rem'}}>Entrar</button>
+                        <div style={{fontSize: '12px', padding: '12px', background: '#f9f9f9', borderRadius: '6px', border: '1px solid #eee'}}>
+                            <p style={{fontWeight: 600, marginBottom: '8px'}}>Usuários demo:</p>
+                            <p>• bruna@komcorp.com.br (Admin)</p>
+                            <p>• joao@komcorp.com.br</p>
+                            <p>• maria@komcorp.com.br</p>
+                        </div>
+                    </div>
+                );
+            }
+
+            if (telaAtual === 'admin') {
+                return (
+                    <div style={{padding: '1.5rem'}}>
+                        <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '2rem'}}>
+                            <h1 style={{fontSize: '28px'}}>Gerenciar Usuários</h1>
+                            <div style={{display: 'flex', gap: '8px'}}>
+                                <button className="secondary" onClick={() => setTelaAtual('chamados')}>Voltar</button>
+                                <button className="secondary" onClick={() => {setUsuarioLogado(null); setTelaAtual('login');}}>Sair</button>
+                            </div>
+                        </div>
+
+                        {importPendente && (
+                            <div style={{padding: '1rem', background: '#fff3cd', border: '1px solid #ffc107', borderRadius: '6px', marginBottom: '1.5rem'}}>
+                                <p style={{fontWeight: 600, marginBottom: '12px'}}>🤔 O que fazer com os {importPendente.length} usuários importados?</p>
+                                <div style={{display: 'flex', gap: '8px'}}>
+                                    <button className="primary" onClick={() => confirmarImport(true)} style={{flex: 1}}>✓ Substituir todos (limpa os antigos)</button>
+                                    <button className="secondary" onClick={() => confirmarImport(false)} style={{flex: 1}}>+ Adicionar (mantém os antigos)</button>
+                                    <button className="danger" onClick={() => setImportPendente(null)} style={{flex: 1}}>✕ Cancelar</button>
+                                </div>
+                            </div>
+                        )}
+
+                        {statusImport && (
+                            <div style={{padding: '12px', background: statusImport.includes('✅') ? '#e8f5e9' : '#ffebee', border: `1px solid ${statusImport.includes('✅') ? '#4caf50' : '#f44336'}`, borderRadius: '6px', marginBottom: '1.5rem', fontSize: '13px', color: statusImport.includes('✅') ? '#2e7d32' : '#c62828'}}>
+                                {statusImport}
+                            </div>
+                        )}
+
+                        <div style={{background: '#fff', padding: '1.5rem', border: '1px solid #ddd', borderRadius: '12px', marginBottom: '2rem'}}>
+                            <h2 style={{marginBottom: '1rem', fontSize: '16px'}}>📤 Importar Usuários do Excel</h2>
+                            <div style={{display: 'flex', gap: '8px', alignItems: 'flex-start'}}>
+                                <input type="file" accept=".xlsx,.xls,.csv" onChange={importarExcel} style={{flex: 1}} />
+                            </div>
+                            <p style={{fontSize: '12px', color: '#666', marginTop: '8px'}}>Seu arquivo deve ter as colunas: <strong>Nome, Email, Departamento</strong></p>
+                        </div>
+
+                        <div style={{background: '#fff', padding: '1.5rem', border: '1px solid #ddd', borderRadius: '12px', marginBottom: '2rem'}}>
+                            <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem'}}>
+                                <h2 style={{fontSize: '16px', margin: 0}}>👥 Usuários ({usuarios.length})</h2>
+                                <button className="primary" onClick={() => setNovoUsuarioModalAberto(true)} style={{padding: '6px 12px', fontSize: '12px'}}>+ Novo</button>
+                            </div>
+                            <table style={{width: '100%', fontSize: '13px', borderCollapse: 'collapse'}}>
+                                <thead><tr style={{borderBottom: '1px solid #ddd'}}>
+                                    <th style={{textAlign: 'left', padding: '10px', fontWeight: 600}}>Nome</th>
+                                    <th style={{textAlign: 'left', padding: '10px', fontWeight: 600}}>Email</th>
+                                    <th style={{textAlign: 'left', padding: '10px', fontWeight: 600}}>Dpto</th>
+                                    <th style={{textAlign: 'center', padding: '10px', fontWeight: 600}}>Permissão</th>
+                                    <th style={{textAlign: 'center', padding: '10px', fontWeight: 600}}>Ação</th>
+                                </tr></thead>
+                                <tbody>
+                                    {usuarios.map(u => (
+                                        <tr key={u.id} style={{borderBottom: '1px solid #eee'}}>
+                                            <td style={{padding: '10px'}}>{u.nome}</td>
+                                            <td style={{padding: '10px', fontSize: '12px'}}>{u.email}</td>
+                                            <td style={{padding: '10px'}}>{u.dpto}</td>
+                                            <td style={{padding: '10px', textAlign: 'center'}}>
+                                                <span style={{fontSize: '11px', fontWeight: 600, background: u.permissao === 'admin' ? '#e34948' : '#1baf7a', color: 'white', padding: '3px 8px', borderRadius: '3px'}}>
+                                                    {u.permissao}
+                                                </span>
+                                            </td>
+                                            <td style={{padding: '10px', textAlign: 'center'}}>
+                                                <button className="danger" onClick={() => deletarUsuario(u.id)} style={{padding: '4px 8px', fontSize: '12px'}}>🗑️ Deletar</button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        {novoUsuarioModalAberto && (
+                            <div style={{position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000}}>
+                                <div style={{background: '#fff', borderRadius: '12px', padding: '1.5rem', width: '90%', maxWidth: '400px', border: '1px solid #ddd'}}>
+                                    <h2 style={{marginBottom: '1rem'}}>Novo Usuário</h2>
+                                    <input type="text" value={formNovoUsuario.nome} onChange={(e) => setFormNovoUsuario({...formNovoUsuario, nome: e.target.value})} placeholder="Nome *" style={{marginBottom: '12px'}} />
+                                    <input type="email" value={formNovoUsuario.email} onChange={(e) => setFormNovoUsuario({...formNovoUsuario, email: e.target.value})} placeholder="Email *" style={{marginBottom: '12px'}} />
+                                    <select value={formNovoUsuario.dpto} onChange={(e) => setFormNovoUsuario({...formNovoUsuario, dpto: e.target.value})} style={{marginBottom: '12px'}}>
+                                        {DEPARTAMENTOS.map(d => <option key={d}>{d}</option>)}
+                                    </select>
+                                    <select value={formNovoUsuario.permissao} onChange={(e) => setFormNovoUsuario({...formNovoUsuario, permissao: e.target.value})} style={{marginBottom: '12px'}}>
+                                        <option>usuario</option>
+                                        <option>admin</option>
+                                    </select>
+                                    <div style={{display: 'flex', gap: '8px', justifyContent: 'flex-end'}}>
+                                        <button className="secondary" onClick={() => {setNovoUsuarioModalAberto(false); setFormNovoUsuario({nome: '', email: '', dpto: DEPARTAMENTOS[0], permissao: 'usuario'});}}>Cancelar</button>
+                                        <button className="primary" onClick={() => {
+                                            if (!formNovoUsuario.nome || !formNovoUsuario.email) { alert('Preencha nome e email'); return; }
+                                            const novoUser = {id: `usr-${String(Math.max(...usuarios.map(u => parseInt(u.id.split('-')[1]) || 0)) + 1).padStart(3, '0')}`, ...formNovoUsuario};
+                                            setUsuarios([...usuarios, novoUser]);
+                                            setNovoUsuarioModalAberto(false);
+                                            setFormNovoUsuario({nome: '', email: '', dpto: DEPARTAMENTOS[0], permissao: 'usuario'});
+                                        }}>Adicionar</button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                );
+            }
+
+            if (telaAtual === 'chamados') {
+                const usuarioAtual = usuarios.find(u => u.id === usuarioLogado.id);
+                const chamadosVistos = chamados.filter(c => {
+                    if (usuarioAtual.permissao !== 'admin' && !usuarios.find(u => u.id === usuarioLogado.id && u.email === c.responsavelEmail)) return false;
+                    if (filtroStatus !== 'Todos' && c.status !== filtroStatus) return false;
+                    if (filtroPrioridade !== 'Todos' && c.prioridade !== filtroPrioridade) return false;
+                    return true;
+                });
+
+                const porStatus = {};
+                COLUNAS.forEach(col => porStatus[col] = []);
+                chamadosVistos.forEach(c => { if (porStatus[c.status]) porStatus[c.status].push(c); });
+
+                const calcVencimento = (dataLimite, status) => {
+                    if (status === 'Resolvido') return { texto: 'Resolvido', crítico: false };
+                    const agora = new Date();
+                    const limite = new Date(dataLimite);
+                    const difHoras = (limite - agora) / (1000 * 60 * 60);
+                    if (difHoras < 0) return { texto: 'VENCIDO', crítico: true };
+                    if (difHoras < (SLAS[status] || 48)) return { texto: `${Math.ceil(difHoras)}h`, crítico: false };
+                    return { texto: '', crítico: false };
+                };
+
+                if (chamadoSelecionado) {
+                    const chamado = chamados.find(c => c.id === chamadoSelecionado);
+                    return (
+                        <div style={{padding: '1.5rem', maxWidth: '900px', margin: '0 auto'}}>
+                            <div style={{background: '#fff', border: '1px solid #ddd', borderRadius: '12px', padding: '2rem'}}>
+                                <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem'}}>
+                                    <h1 style={{fontSize: '24px', margin: 0}}>{chamado.titulo}</h1>
+                                    <button className="secondary" onClick={() => setChamadoSelecionado(null)}>Fechar</button>
+                                </div>
+                                <p style={{color: '#666', marginBottom: '1rem'}}>{chamado.id} • {chamado.prioridade}</p>
+                                <div style={{padding: '1rem', background: '#f9f9f9', borderRadius: '6px', marginBottom: '1rem'}}>
+                                    <p style={{color: '#666', fontSize: '12px', marginBottom: '4px'}}>Descrição</p>
+                                    <p>{chamado.descricao}</p>
+                                </div>
+                                <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px'}}>
+                                    <div style={{padding: '10px', background: '#f9f9f9', borderRadius: '6px'}}>
+                                        <p style={{color: '#666', fontSize: '12px', marginBottom: '4px'}}>Status</p>
+                                        <p style={{fontWeight: 600}}>{chamado.status}</p>
+                                    </div>
+                                    <div style={{padding: '10px', background: '#f9f9f9', borderRadius: '6px'}}>
+                                        <p style={{color: '#666', fontSize: '12px', marginBottom: '4px'}}>Data Limite</p>
+                                        <p style={{fontWeight: 600}}>{chamado.dataLimite}</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    );
+                }
+
+                return (
+                    <div style={{padding: '1.5rem'}}>
+                        <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '2rem'}}>
+                            <h1 style={{fontSize: '28px', margin: 0}}>{usuarioAtual.nome}</h1>
+                            <div style={{display: 'flex', gap: '8px'}}>
+                                {usuarioAtual.permissao === 'admin' && <button className="primary" onClick={() => setTelaAtual('admin')}>👥 Usuários</button>}
+                                <button className="primary" onClick={() => setNovoModalAberto(true)}>+ Novo</button>
+                                <button className="secondary" onClick={() => {setUsuarioLogado(null); setTelaAtual('login');}}>Sair</button>
+                            </div>
+                        </div>
+
+                        <div style={{display: 'flex', gap: '12px', marginBottom: '1.5rem'}}>
+                            <select value={filtroStatus} onChange={(e) => setFiltroStatus(e.target.value)}>
+                                <option>Todos</option>
+                                {COLUNAS.map(c => <option key={c}>{c}</option>)}
+                            </select>
+                            <select value={filtroPrioridade} onChange={(e) => setFiltroPrioridade(e.target.value)}>
+                                <option>Todos</option>
+                                {PRIORIDADES.map(p => <option key={p}>{p}</option>)}
+                            </select>
+                        </div>
+
+                        <div style={{display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '16px'}}>
+                            {COLUNAS.map(coluna => (
+                                <div key={coluna} style={{background: '#fff', border: '1px solid #ddd', borderRadius: '12px', padding: '1rem', display: 'flex', flexDirection: 'column'}} onDragOver={(e) => e.preventDefault()} onDrop={(e) => {
+                                    e.preventDefault();
+                                    if (draggedCard) {
+                                        setChamados(chamados.map(c => c.id === draggedCard ? {...c, status: coluna} : c));
+                                        setDraggedCard(null);
+                                    }
+                                }}>
+                                    <h3 style={{fontSize: '14px', fontWeight: 600, marginBottom: '12px'}}>{coluna} ({porStatus[coluna]?.length || 0})</h3>
+                                    <div style={{display: 'flex', flexDirection: 'column', gap: '12px', flex: 1}}>
+                                        {porStatus[coluna]?.map(card => {
+                                            const venc = calcVencimento(card.dataLimite, card.status);
+                                            return (
+                                                <div key={card.id} draggable onDragStart={() => setDraggedCard(card.id)} onDragEnd={() => setDraggedCard(null)} onClick={() => setChamadoSelecionado(card.id)} style={{background: '#f9f9f9', border: venc.crítico ? '2px solid #e34948' : '1px solid #ddd', borderRadius: '8px', padding: '10px', cursor: 'pointer', opacity: draggedCard === card.id ? 0.5 : 1}}>
+                                                    <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '6px'}}>
+                                                        <span style={{fontSize: '11px', color: '#999'}}>{card.id}</span>
+                                                        <span style={{fontSize: '11px', fontWeight: 600, color: 'white', background: COR[card.prioridade], padding: '2px 8px', borderRadius: '3px'}}>{card.prioridade}</span>
+                                                    </div>
+                                                    <p style={{fontSize: '13px', fontWeight: 500, margin: '0 0 8px'}}>{card.titulo}</p>
+                                                    {venc.texto && <div style={{fontSize: '11px', fontWeight: 600, color: venc.crítico ? '#e34948' : '#fab219', background: venc.crítico ? 'rgba(227, 73, 72, 0.1)' : 'rgba(250, 178, 25, 0.1)', padding: '4px 6px', borderRadius: '3px', textAlign: 'center'}}>{venc.texto}</div>}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+
+                        {novoModalAberto && (
+                            <div style={{position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000}}>
+                                <div style={{background: '#fff', borderRadius: '12px', padding: '1.5rem', width: '90%', maxWidth: '500px', border: '1px solid #ddd'}}>
+                                    <h2 style={{marginBottom: '1rem'}}>Novo Chamado</h2>
+                                    <input type="text" value={formNovo.titulo} onChange={(e) => setFormNovo({...formNovo, titulo: e.target.value})} placeholder="Título *" style={{marginBottom: '12px'}} />
+                                    <textarea value={formNovo.descricao} onChange={(e) => setFormNovo({...formNovo, descricao: e.target.value})} placeholder="Descrição" style={{marginBottom: '12px', minHeight: '80px'}} />
+                                    <select value={formNovo.prioridade} onChange={(e) => setFormNovo({...formNovo, prioridade: e.target.value})} style={{marginBottom: '12px'}}>
+                                        {PRIORIDADES.map(p => <option key={p}>{p}</option>)}
+                                    </select>
+                                    <input type="date" value={formNovo.dataLimite} onChange={(e) => setFormNovo({...formNovo, dataLimite: e.target.value})} style={{marginBottom: '12px'}} />
+                                    <div style={{display: 'flex', gap: '8px', justifyContent: 'flex-end'}}>
+                                        <button className="secondary" onClick={() => {setNovoModalAberto(false); setFormNovo({titulo: '', descricao: '', prioridade: 'Média', dataLimite: new Date().toISOString().split('T')[0], responsavel: ''});}}>Cancelar</button>
+                                        <button className="primary" onClick={() => {
+                                            if (!formNovo.titulo) { alert('Preencha o título'); return; }
+                                            const proximoId = `CID-${String(Math.max(0, ...chamados.map(c => parseInt(c.id.split('-')[1]) || 0)) + 1).padStart(3, '0')}`;
+                                            const novo = {...formNovo, id: proximoId, status: 'Novo', responsavelEmail: usuarioAtual.email};
+                                            setChamados([...chamados, novo]);
+                                            setNovoModalAberto(false);
+                                            setFormNovo({titulo: '', descricao: '', prioridade: 'Média', dataLimite: new Date().toISOString().split('T')[0], responsavel: ''});
+                                        }}>Criar</button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                );
+            }
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<PainelChamados />);
+    </script>
+</body>
+</html>
